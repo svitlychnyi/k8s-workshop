@@ -9,7 +9,7 @@
 * minikube
     * configure Docker daemon:
         * ip address
-        * echo '{ "bip":"172.18.0.1/16", "insecure-registries":[] }' > /etc/docker/daemon.json
+        * echo '{ "bip":"172.18.0.1/24", "insecure-registries":[] }' > /etc/docker/daemon.json
         * service docker restart
         * restart PC
         * ip address

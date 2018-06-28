@@ -47,7 +47,7 @@
 
     * Insecure Registry (10.109.49.71 - Service IP address, not a pods)
         * Run on each node:
-            * echo '{ "bip":"172.18.0.1/16", "insecure-registries":["10.109.49.71:5000"] }' > /etc/docker/daemon.json
+            * echo '{ "bip":"172.18.0.1/24", "insecure-registries":["10.109.49.71:5000"] }' > /etc/docker/daemon.json
             * service docker restart
 
 5. Install kubeadm, kubelet and kubectl (https://kubernetes.io/docs/setup/independent/install-kubeadm/)
@@ -131,13 +131,131 @@
               name: kubernetes-dashboard
               namespace: kube-system
         ```
-    * [master]: kubectl proxy
-    * [local]: ssh -f <user>@<master-ip> -L 8001:127.0.0.1:8001 -N
-    * http://localhost:8001/api/v1/namespaces/kube-system/services/https:kubernetes-dashboard:/proxy/#!/login
-        * lsof -ti:8001 | xargs kill -9
-    * Press skip on login page
+    * [master]:
+        * apt-get install openssh-server
+        * kubectl proxy
+    * [local]:
+        * ssh-copy-id <user>@<master-ip>
+            * ssh <user>@<master-ip>
+        * ssh -f <user>@<master-ip> -L 8001:127.0.0.1:8001 -N
+            * lsof -ti:8001 | xargs kill -9
+        * http://localhost:8001/api/v1/namespaces/kube-system/services/https:kubernetes-dashboard:/proxy/#!/login
+        * Press skip on login page
 
-10. Helm
+10. Persistent storage - NFS (https://joshrendek.com/2018/04/kubernetes-on-bare-metal/#registry)
+        * Setup NFS server on master node (https://www.server-world.info/en/note?os=Debian_8&p=nfs)
+            * ssh root@<master-node>
+            * mkdir -p /k8s-storage/volume1
+            * Debian:
+                * aptitude -y install nfs-kernel-server
+                * vim /etc/idmapd.conf
+            * Ubuntu:
+                * apt-get -y install nfs-kernel-server
+                * vim /etc/exports
+            * add following: /k8s-storage 172.20.0.0/24(rw,no_root_squash)
+            * systemctl restart nfs-kernel-server
+        * Install nfs utils on all nodes:
+            * apt install nfs-common
+        * Set up NFS storage class in k8s
+            * get git repo from https://github.com/kubernetes-incubator/external-storage.git
+            * modify external-storage/nfs-client/deploy/class.yaml:
+            ```
+                apiVersion: storage.k8s.io/v1
+                kind: StorageClass
+                metadata:
+                  name: managed-nfs-storage
+                provisioner: k8s-master-server/nfs
+            ```
+            * modify external-storage/nfs-client/deploy/deployment.yaml:
+            ```
+                kind: Deployment
+                apiVersion: extensions/v1beta1
+                metadata:
+                  name: nfs-client-provisioner
+                spec:
+                  replicas: 1
+                  strategy:
+                    type: Recreate
+                  template:
+                    metadata:
+                      labels:
+                        app: nfs-client-provisioner
+                    spec:
+                      serviceAccountName: nfs-client-provisioner
+                      containers:
+                        - name: nfs-client-provisioner
+                          image: quay.io/external_storage/nfs-client-provisioner:latest
+                          volumeMounts:
+                            - name: nfs-client-root
+                              mountPath: /persistentvolumes
+                          env:
+                            - name: PROVISIONER_NAME
+                              value: k8s-master-server/nfs
+                            - name: NFS_SERVER
+                              value: <master-ip>
+                            - name: NFS_PATH
+                              value: /k8s-storage/volume1
+                      volumes:
+                        - name: nfs-client-root
+                          nfs:
+                            server: <master-ip>
+                            path: /k8s-storage/volume1
+            ```
+            * Setup NFS storage in k8s
+                * go to external-storage/nfs-client folder of the downloaded git project
+                * kubectl apply -f deploy/deployment.yaml
+                * kubectl apply -f deploy/class.yaml
+                * kubectl create -f deploy/auth/serviceaccount.yaml
+                * kubectl create -f deploy/auth/clusterrole.yaml
+                * kubectl create -f deploy/auth/clusterrolebinding.yaml
+                * kubectl patch deployment nfs-client-provisioner -p '{"spec":{"template":{"spec":{"serviceAccount":"nfs-client-provisioner"}}}}'
+                * kubectl patch storageclass managed-nfs-storage -p '{"metadata": {"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}'
+            * Expected result:
+                * Deployment should be created and running (nfs-client-provisioner)
+                * Pod should be created and running (nfs-client-provisioner)
+            * Test the result
+                * Create a file called nfs-test.yaml:
+                    ```
+                        kind: PersistentVolumeClaim
+                        apiVersion: v1
+                        metadata:
+                          name: test-claim
+                          annotations:
+                            volume.beta.kubernetes.io/storage-class: "managed-nfs-storage"
+                        spec:
+                          accessModes:
+                            - ReadWriteMany
+                          resources:
+                            requests:
+                              storage: 1Mi
+                        ---
+                        kind: Pod
+                        apiVersion: v1
+                        metadata:
+                          name: test-pod
+                        spec:
+                          containers:
+                          - name: test-pod
+                            image: gcr.io/google_containers/busybox:1.24
+                            command:
+                              - "/bin/sh"
+                            args:
+                              - "-c"
+                              - "touch /mnt/SUCCESS && exit 0 || exit 1"
+                            volumeMounts:
+                              - name: nfs-pvc
+                                mountPath: "/mnt"
+                          restartPolicy: "Never"
+                          volumes:
+                            - name: nfs-pvc
+                              persistentVolumeClaim:
+                                claimName: test-claim
+                    ```
+                * kubectl apply -f nfs-test.yaml
+                * Expected result:
+                    * Claim should be created (test-claim)
+                    * Volume should be created (pvc-<UID>)
+11. Helm
     * Install tool
         * curl https://raw.githubusercontent.com/kubernetes/helm/master/scripts/get >> helm.sh
         * chmod 700 helm.sh
@@ -146,177 +264,258 @@
         * kubectl create serviceaccount --namespace kube-system tiller
         * kubectl create clusterrolebinding tiller-cluster-rule --clusterrole=cluster-admin --serviceaccount=kube-system:tiller
         * helm init --service-account tiller
-        * helm ls
+        * export HELM_HOST=<service-endpoint>:44134
+        * helm version
 
-11.
-
-10. LoadBalancer - Ingress (https://kubernetes.io/docs/concepts/services-networking/ingress/)
-    * curl https://raw.githubusercontent.com/kubernetes/ingress-nginx/master/deploy/namespace.yaml \
-          | kubectl apply -f -
-    * curl https://raw.githubusercontent.com/kubernetes/ingress-nginx/master/deploy/default-backend.yaml \
-          | kubectl apply -f -
-    * curl https://raw.githubusercontent.com/kubernetes/ingress-nginx/master/deploy/configmap.yaml \
-          | kubectl apply -f -
-    * curl https://raw.githubusercontent.com/kubernetes/ingress-nginx/master/deploy/tcp-services-configmap.yaml \
-          | kubectl apply -f -
-    * curl https://raw.githubusercontent.com/kubernetes/ingress-nginx/master/deploy/udp-services-configmap.yaml \
-          | kubectl apply -f -
-    * curl https://raw.githubusercontent.com/kubernetes/ingress-nginx/master/deploy/rbac.yaml \
-          | kubectl apply -f -
-    * curl https://raw.githubusercontent.com/kubernetes/ingress-nginx/master/deploy/with-rbac.yaml \
-          | kubectl apply -f -
-    * curl https://raw.githubusercontent.com/kubernetes/ingress-nginx/master/deploy/provider/baremetal/service-nodeport.yaml \
-          | kubectl apply -f -
-    * This will install and deploy Nginx servers as a loadbalancer on each node with the same port
-    * In ingress-nginx namespace in the services: "ingress-nginx" port is specified
-    * To expose service create ingress and add host name in the hosts of your local machine to map it
-
-11. Persistent storage - NFS (https://joshrendek.com/2018/04/kubernetes-on-bare-metal/#registry)
-    * Setup NFS server on master node (https://www.server-world.info/en/note?os=Debian_8&p=nfs)
-        * ssh root@<master-node>
-        * mkdir -p /k8s-storage/volume1
-        * aptitude -y install nfs-kernel-server
-        * Debian:
-            * vim /etc/idmapd.conf
-        * Ubuntu:
-            * vim /etc/exports
-        * add following: /k8s-storage 172.20.0.0/24(rw,no_root_squash)
-        * systemctl restart nfs-kernel-server
-    * Install nfs utils on all nodes:
-        * apt install nfs-common
-    * Set up NFS storage class in k8s
-        * get git repo from https://github.com/kubernetes-incubator/external-storage.git
-        * modify external-storage/nfs-client/deploy/class.yaml:
+12. Loadbalancer
+    * vim traefik.yaml:
         ```
-            apiVersion: storage.k8s.io/v1
-            kind: StorageClass
-            metadata:
-              name: managed-nfs-storage
-            provisioner: k8s-master-server/nfs
+            serviceType: NodePort
+            externalTrafficPolicy: Cluster
+            replicas: 1
+            cpuRequest: 10m
+            memoryRequest: 20Mi
+            cpuLimit: 100m
+            memoryLimit: 30Mi
+            debug:
+              enabled: false
+            ssl:
+              enabled: true
+            acme:
+              enabled: true
+              email: your_email@example.com
+              staging: false
+              logging: true
+              challengeType: http-01
+              persistence:
+                enabled: true
+                annotations: {
+                  volume.beta.kubernetes.io/storage-class: "managed-nfs-storage"
+                }
+                accessMode: ReadWriteOnce
+                size: 1Gi
+            dashboard:
+              enabled: true
+              domain: dashboard.k8s.workshop.local # YOUR DOMAIN HERE
+              service:
+                annotations:
+                  kubernetes.io/ingress.class: traefik
+              auth:
+                basic:
+                  admin: $apr1$VEY.Vz8J$s/gLBw8q0WKKI3TqhUrXk1 # FILL THIS IN WITH A HTPASSWD VALUE
+            gzip:
+              enabled: true
+            accessLogs:
+              enabled: false
+              ## Path to the access logs file. If not provided, Traefik defaults it to stdout.
+              # filePath: ""
+              format: common  # choices are: common, json
+            rbac:
+              enabled: true
+            ## Enable the /metrics endpoint, for now only supports prometheus
+            ## set to true to enable metric collection by prometheus
+            service:
+              nodePorts:
+                http: 30080
+                https: 30443
+            deployment:
+              hostPort:
+                httpEnabled: true
+                httpsEnabled: true
         ```
-        * modify external-storage/nfs-client/deploy/deployment.yaml:
-        ```
-            kind: Deployment
-            apiVersion: extensions/v1beta1
-            metadata:
-              name: nfs-client-provisioner
-            spec:
-              replicas: 1
-              strategy:
-                type: Recreate
-              template:
+    * helm install stable/traefik --name traefik -f traefik.yaml --namespace kube-system
+    * Test:
+        * kubectl run hello-minikube --image=k8s.gcr.io/echoserver:1.10 --port=8080
+        * kubectl expose deployment hello-minikube --type=NodePort
+        * curl <node-ip>:<service-port>
+        * create  Ingress:
+            ```
+                apiVersion: extensions/v1beta1
+                kind: Ingress
                 metadata:
-                  labels:
-                    app: nfs-client-provisioner
+                  name: hello-minikube
+                  annotations:
+                    kubernetes.io/ingress.class: traefik
                 spec:
-                  serviceAccountName: nfs-client-provisioner
-                  containers:
-                    - name: nfs-client-provisioner
-                      image: quay.io/external_storage/nfs-client-provisioner:latest
-                      volumeMounts:
-                        - name: nfs-client-root
-                          mountPath: /persistentvolumes
-                      env:
-                        - name: PROVISIONER_NAME
-                          value: k8s-master-server/nfs
-                        - name: NFS_SERVER
-                          value: <master-ip>
-                        - name: NFS_PATH
-                          value: /k8s-storage/volume1
-                  volumes:
-                    - name: nfs-client-root
-                      nfs:
-                        server: <master-ip>
-                        path: /k8s-storage/volume1
+                  rules:
+                  - host: hello-minikube.k8s.workshop.local
+                    http:
+                      paths:
+                      - backend:
+                          serviceName: hello-minikube
+                          servicePort: 8080
+            ```
+        * add local domain to the hosts file:
+            * <node-ip> hello-minikube.k8s.workshop.local
+        * open in browser:
+            * http://hello-minikube.k8s.workshop.local:30080
+
+13. Docker Registry
+    * docker run --rm -ti xmartlabs/htpasswd evia evia2018 > htpasswd
+    * cat htpasswd
+    * vim registry.yaml:
         ```
-        * Setup NFS storage in k8s
-            * go to external-storage/nfs-client folder of the downloaded git project
-            * kubectl apply -f deploy/deployment.yaml
-            * kubectl apply -f deploy/class.yaml
-            * kubectl create -f deploy/auth/serviceaccount.yaml
-            * kubectl create -f deploy/auth/clusterrole.yaml
-            * kubectl create -f deploy/auth/clusterrolebinding.yaml
-            * kubectl patch deployment nfs-client-provisioner -p '{"spec":{"template":{"spec":{"serviceAccount":"nfs-client-provisioner"}}}}'
-            * kubectl patch storageclass managed-nfs-storage -p '{"metadata": {"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}'
-        * Expected result:
-            * Deployment should be created and running (nfs-client-provisioner)
-            * Pod should be created and running (nfs-client-provisioner)
-        * Test the result
-            * Create a file called nfs-test.yaml:
-                ```
-                    kind: PersistentVolumeClaim
-                    apiVersion: v1
-                    metadata:
-                      name: test-claim
-                      annotations:
-                        volume.beta.kubernetes.io/storage-class: "managed-nfs-storage"
-                    spec:
-                      accessModes:
-                        - ReadWriteMany
-                      resources:
-                        requests:
-                          storage: 1Mi
-                    ---
-                    kind: Pod
-                    apiVersion: v1
-                    metadata:
-                      name: test-pod
-                    spec:
-                      containers:
-                      - name: test-pod
-                        image: gcr.io/google_containers/busybox:1.24
-                        command:
-                          - "/bin/sh"
-                        args:
-                          - "-c"
-                          - "touch /mnt/SUCCESS && exit 0 || exit 1"
-                        volumeMounts:
-                          - name: nfs-pvc
-                            mountPath: "/mnt"
-                      restartPolicy: "Never"
-                      volumes:
-                        - name: nfs-pvc
-                          persistentVolumeClaim:
-                            claimName: test-claim
-                ```
-            * kubectl apply -f nfs-test.yaml
-            * Expected result:
-                * Claim should be created (test-claim)
-                * Volume should be created (pvc-<UID>)
+            replicaCount: 1
+            ingress:
+              enabled: true
+              # Used to create an Ingress record.
+              hosts:
+                - registry.k8s.workshop.local
+              annotations:
+                kubernetes.io/ingress.class: traefik
+            persistence:
+              accessMode: 'ReadWriteOnce'
+              enabled: true
+              size: 10Gi
+              storageClass: 'managed-nfs-storage'
+            # set the type of filesystem to use: filesystem, s3
+            storage: filesystem
+            secrets:
+              haSharedSecret: ""
+              htpasswd: "evia:$2y$05$NLaxeh6iNDFLVuDknNJvk.FK3NNTQeuO1Us9Z0MtwY8OWohOqrb6a"
+        ```
+    * helm install -f registry.yaml --name registry stable/docker-registry
+    * kubectl create secret docker-registry regcred --docker-server=registry.k8s.workshop.local:30443 --docker-username=evia --docker-password=evia2018 --docker-email=k8s@mail.com
+    * add Insecure Registry to each node + master (<registry-service-ip>)
+        * vim /etc/docker/daemon.json
+            * "insecure-registries": ["<registry-service-ip>:5000"]
+        * service docker restart
+    * docker login <registry-service-ip>:5000
+        * evia / evia2018
 
-Helm
-    * SSL (https://github.com/kubernetes/helm/blob/master/docs/tiller_ssl.md)
-    * https://github.com/kubernetes/helm/issues/3460:
-        * kubectl delete svc tiller-deploy -n kube-system
-        * kubectl -n kube-system delete deploy tiller-deploy
-        * kubectl create serviceaccount --namespace kube-system tiller
-        * kubectl create clusterrolebinding tiller-cluster-rule --clusterrole=cluster-admin --serviceaccount=kube-system:tiller
-        * helm init --service-account tiller
-        * helm ls
+14. Jenkins
+    * kubectl create namespace jenkins
+    * vim jenkins-account.yaml
+        ```
+            apiVersion: v1
+            kind: ServiceAccount
+            metadata:
+              name: default
+              namespace: jenkins
+        ```
+    * kubectl create -f jenkins-account.yaml
+    * vim jenkins-role.yaml
+        ```
+            apiVersion: rbac.authorization.k8s.io/v1beta1
+            kind: ClusterRoleBinding
+            metadata:
+              name: default
+            roleRef:
+              apiGroup: rbac.authorization.k8s.io
+              kind: ClusterRole
+              name: cluster-admin
+            subjects:
+            - kind: ServiceAccount
+              name: default
+              namespace: jenkins
+        ```
+    * kubectl create -f jenkins-account.yaml
+    * vim jenkins.yaml
+        ```
+            Master:
+              Name: jenkins-master
+              Image: "jenkins/jenkins"
+              ImageTag: "lts"
+              ImagePullPolicy: "Always"
+              Component: "jenkins-master"
+              UseSecurity: true
+              AdminUser: evia
+              AdminPassword: evia2018
+              Cpu: "200m"
+              Memory: "256Mi"
+              ServicePort: 8080
+              ServiceType: ClusterIP
+              ServiceAnnotations: {}
+              ContainerPort: 8080
+              HealthProbes: true
+              HealthProbesTimeout: 60
+              HealthProbeLivenessFailureThreshold: 12
+              SlaveListenerPort: 50000
+              DisabledAgentProtocols:
+                - JNLP-connect
+                - JNLP2-connect
+              CSRF:
+                DefaultCrumbIssuer:
+                  Enabled: true
+                  ProxyCompatability: true
+              CLI: false
+              SlaveListenerServiceType: ClusterIP
+              SlaveListenerServiceAnnotations: {}
+              LoadBalancerSourceRanges:
+              - 0.0.0.0/0
+              InstallPlugins:
+                - kubernetes
+                - workflow-aggregator
+                - workflow-job
+                - credentials-binding
+                - git
+                - ghprb
+                - blueocean
+              InitScripts:
+              CustomConfigMap: false
+              NodeSelector: {}
+              Tolerations: {}
 
+              Ingress:
+                ApiVersion: extensions/v1beta1
+                Annotations:
+                  kubernetes.io/ingress.class: traefik
+                TLS:
 
-Docker Registry
-    * docker run --rm -ti xmartlabs/htpasswd <username> <password> > htpasswd
-    * kubectl create secret docker-registry regcred --docker-server=registry.k8s.test.local:30443 --docker-username=admin --docker-password=admin --docker-email=k8s@mail.com
-    * kubectl create secret docker-registry regcred -n oca-web --docker-server=10.109.49.71:5000 --docker-username=admin --docker-password=admin --docker-email=k8s@mail.com
-    * Insecure Registry (10.109.49.71 - Service IP address, not a pods)
-        * Run on each node:
-            * echo '{ "bip":"172.18.0.1/16", "insecure-registries":["10.109.49.71:5000"] }' > /etc/docker/daemon.json
-            * service docker restart
+            Agent:
+              Enabled: true
+              Image: jenkins/jnlp-slave
+              ImageTag: 3.10-1
+              Component: "jenkins-slave"
+              Privileged: false
+              Cpu: "200m"
+              Memory: "256Mi"
+              AlwaysPullImage: false
+              volumes:
+              NodeSelector: {}
 
-ifconfig br-ac6dbdbb51c3 down // for 172.17.0.1 net
+            Persistence:
+              Enabled: true
+              Annotations: {
+                volume.beta.kubernetes.io/storage-class: "managed-nfs-storage"
+              }
+              AccessMode: ReadWriteOnce
+              Size: 8Gi
+              volumes:
+              mounts:
 
-https://akomljen.com/set-up-a-jenkins-ci-cd-pipeline-with-kubernetes/
+            NetworkPolicy:
+              Enabled: false
+              ApiVersion: extensions/v1beta1
 
-{ "auths": { "10.109.49.71:5000": { "auth": "YWRtaW46YWRtaW4=" } } }
+            rbac:
+              install: false
+              serviceAccountName: default
+              apiVersion: v1beta1
+              roleRef: cluster-admin
+        ```
+    * helm install -f jenkins.yaml --name jenkins --namespace jenkins stable/jenkins
+    * create ingress
+        ```
+            apiVersion: extensions/v1beta1
+            kind: Ingress
+            metadata:
+              name: jenkins
+              annotations:
+                kubernetes.io/ingress.class: traefik
+            spec:
+              rules:
+              - host: jenkins.k8s.workshop.local
+                http:
+                  paths:
+                  - backend:
+                      serviceName: jenkins
+                      servicePort: 8080
+        ```
 
+15. Auto-scale:
+    * https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale-walkthrough/
 
-http://oca.k8s.test.local:30080/
+16. Prometheus:
+    * https://medium.com/@timfpark/simple-kubernetes-cluster-monitoring-with-prometheus-and-grafana-dd27edb1641
 
-
-
-Go to “Manage Jenkins” -> “Script console” Type and run below command:
-System.setProperty("hudson.model.DirectoryBrowserSupport.CSP", "")
-
-NOTE: Jenkins agent must login to registry at least once: run build web app job before e2e after jenkins restart
-(TODO: add credentials to containerTemplate in pipeline)

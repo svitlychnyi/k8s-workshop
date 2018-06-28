@@ -32,23 +32,18 @@
         * Persistent Volumes: https://kubernetes.io/docs/concepts/storage/persistent-volumes
         * Secrets: https://kubernetes.io/docs/concepts/configuration/secret
 
-* Day 2 (Might change after Day 1)
+* Day 2
     * Installation
         * Master
         * Node
     * Setup
         * Dashboard
-        * Monitoring
         * Helm
         * Persistent storage
         * Loadbalancer
         * Docker registry
         * Jenkins
-    * Demo
-        * ? Demo app
-        * ? DDos
-        * ? Pipeline
-
+        * Monitoring
 
 
 
