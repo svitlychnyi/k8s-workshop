@@ -15,6 +15,11 @@
     * add node name to second line
     * Restart VM
 
+2.1. Set timezone
+    * dpkg-reconfigure tzdata
+    * Jenkins deployment:
+        * -Duser.timezone=Europe/Berlin
+
 3. Disable swap (https://unix.stackexchange.com/questions/224156/how-to-safely-turn-off-swap-permanently-and-reclaim-the-space-on-debian-jessie)  
     * swapoff -a
     * Debian:
@@ -141,6 +146,13 @@
             * lsof -ti:8001 | xargs kill -9
         * http://localhost:8001/api/v1/namespaces/kube-system/services/https:kubernetes-dashboard:/proxy/#!/login
         * Press skip on login page
+    * Metrics
+        * helm install -name heapster --namespace kube-system stable/heapster
+        * kubectl -n kube-system edit deploy heapster-heapster
+            * in spec/template/spec/command
+                * - --source=kubernetes.summary_api:https://kubernetes.default?kubeletHttps=true&kubeletPort=10250&insecure=true
+        * kubectl edit clusterRole system:heapster
+            * add "- nodes/stats" to apiGroups.resources
 
 10. Persistent storage - NFS (https://joshrendek.com/2018/04/kubernetes-on-bare-metal/#registry)
         * Setup NFS server on master node (https://www.server-world.info/en/note?os=Debian_8&p=nfs)
@@ -148,10 +160,9 @@
             * mkdir -p /k8s-storage/volume1
             * Debian:
                 * aptitude -y install nfs-kernel-server
-                * vim /etc/idmapd.conf
             * Ubuntu:
                 * apt-get -y install nfs-kernel-server
-                * vim /etc/exports
+            * vim /etc/exports
             * add following: /k8s-storage 172.20.0.0/24(rw,no_root_squash)
             * systemctl restart nfs-kernel-server
         * Install nfs utils on all nodes:
@@ -512,6 +523,7 @@
                       serviceName: jenkins
                       servicePort: 8080
         ```
+    * System.setProperty("org.jenkinsci.plugins.durabletask.BourneShellScript.HEARTBEAT_CHECK_INTERVAL", "36000")
 
 15. Auto-scale:
     * https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale-walkthrough/

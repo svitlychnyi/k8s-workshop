@@ -1,0 +1,40 @@
+podTemplate(
+    label: 'docker',
+    containers: [
+        containerTemplate(name: 'docker', image: 'docker:1.11', ttyEnabled: true, command: 'cat')
+    ],
+    volumes: [
+        hostPathVolume(hostPath: '/var/run/docker.sock', mountPath: '/var/run/docker.sock')
+    ]
+) {
+
+    node('docker') {
+        withCredentials([
+            string(credentialsId: 'registry', variable: 'DOCKER_REGISTRY'),
+            usernamePassword(credentialsId: 'docker-registry-credentials', usernameVariable: 'DOCKER_REGISTRY_USER',passwordVariable: 'DOCKER_REGISTRY_PASSWORD')
+        ]) {
+
+            stage('checkout') {
+                git 'https://github.com/jincod/docker-sonarqube'
+            }
+
+
+            stage('build') {
+                container('docker') {
+                    sh "docker login -u ${env.DOCKER_REGISTRY_USER} -p ${env.DOCKER_REGISTRY_PASSWORD} ${env.DOCKER_REGISTRY}"
+
+                    sh """
+                        ls -al
+                        cd 7.2-alpine
+                        ls -al
+                        docker build -t sonarqube:7.2-alpine .
+                       """
+
+                    sh "docker tag sonarqube:7.2-alpine ${env.DOCKER_REGISTRY}/sonarqube:7.2-alpine"
+                    sh "docker push ${env.DOCKER_REGISTRY}/sonarqube:7.2-alpine"
+                }
+            }
+
+        }
+    }
+}
