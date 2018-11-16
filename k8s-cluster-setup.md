@@ -52,7 +52,7 @@
 
     * Insecure Registry (10.109.49.71 - Service IP address, not a pods)
         * Run on each node:
-            * echo '{ "bip":"172.18.0.1/24", "insecure-registries":["10.109.49.71:5000"] }' > /etc/docker/daemon.json
+            * echo '{ "bip":"172.18.0.1/24", "insecure-registries":["10.98.163.131:5000"] }' > /etc/docker/daemon.json
             * service docker restart
 
 5. Install kubeadm, kubelet and kubectl (https://kubernetes.io/docs/setup/independent/install-kubeadm/)
@@ -64,6 +64,18 @@
     * apt-get update
     * apt-get install -y kubelet kubeadm kubectl
 
+5.1. To install specific version of the package it is enough to define it during the apt-get install command:
+
+     apt-get install -qy kubeadm=<version>
+     But in the current case kubectl and kubelet packages are installed by dependencies when we install kubeadm, so all these three packages should be installed with a specific version:
+
+     $ curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key add - && \
+       echo "deb http://apt.kubernetes.io/ kubernetes-xenial main" | sudo tee /etc/apt/sources.list.d/kubernetes.list && \
+       sudo apt-get update -q && \
+       sudo apt-get install -qy kubelet=<version> kubectl=<version> kubeadm=<version>
+     where available <version> is:
+
+     curl -s https://packages.cloud.google.com/apt/dists/kubernetes-xenial/main/binary-amd64/Packages | grep Version | awk '{print $2}'
 
 6. Setup cluster node (follow steps 1 - 5)
 
@@ -531,3 +543,5 @@
 16. Prometheus:
     * https://medium.com/@timfpark/simple-kubernetes-cluster-monitoring-with-prometheus-and-grafana-dd27edb1641
 
+17. SonarQube:
+    * https://coderise.io/installing-sonarqube-in-kubernetes/
