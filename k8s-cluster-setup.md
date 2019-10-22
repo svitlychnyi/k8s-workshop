@@ -1,7 +1,7 @@
 ### Setup Cluster:
-1. Create new VM using Debian 9 image (http://cloud.proway-fs.local:9869/)
+1. Create new VM using Debian 9 image
     * Set name: k8s-master
-    * Set memory 4GB
+    * Set memory 16GB
     * Set CPU 0.05
     * Set HDD 80GB
     * Set network default
@@ -24,7 +24,7 @@
     * swapoff -a
     * Debian:
         * Delete the swap partition
-            * fdisk /dev/vdb
+            * w
             * n -> ceate new primary partition with default settings
             * w
     * Ubuntu:
@@ -50,7 +50,7 @@
     * Ubuntu:
         * apt install docker.io
 
-    * Insecure Registry (10.109.49.71 - Service IP address, not a pods)
+    * Insecure Registry (10.98.163.131 - Service IP address, not a pods)
         * Run on each node:
             * echo '{ "bip":"172.18.0.1/24", "insecure-registries":["10.98.163.131:5000"] }' > /etc/docker/daemon.json
             * service docker restart
@@ -65,17 +65,20 @@
     * apt-get install -y kubelet kubeadm kubectl
 
 5.1. To install specific version of the package it is enough to define it during the apt-get install command:
-
-     apt-get install -qy kubeadm=<version>
-     But in the current case kubectl and kubelet packages are installed by dependencies when we install kubeadm, so all these three packages should be installed with a specific version:
-
-     $ curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key add - && \
-       echo "deb http://apt.kubernetes.io/ kubernetes-xenial main" | sudo tee /etc/apt/sources.list.d/kubernetes.list && \
-       sudo apt-get update -q && \
-       sudo apt-get install -qy kubelet=<version> kubectl=<version> kubeadm=<version>
-     where available <version> is:
-
-     curl -s https://packages.cloud.google.com/apt/dists/kubernetes-xenial/main/binary-amd64/Packages | grep Version | awk '{print $2}'
+     
+     NOTE: In the current case kubectl and kubelet packages are installed by dependencies when we install kubeadm, so all these three packages should be installed with a specific version:
+         $ curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key add - && \
+           echo "deb http://apt.kubernetes.io/ kubernetes-xenial main" | sudo tee /etc/apt/sources.list.d/kubernetes.list && \
+           sudo apt-get update -q && \
+           sudo apt-get install -qy kubelet=<version> kubectl=<version> kubeadm=<version> 
+       example:
+         $ curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key add - && \
+           echo "deb http://apt.kubernetes.io/ kubernetes-xenial main" | sudo tee /etc/apt/sources.list.d/kubernetes.list && \
+           sudo apt-get update -q && \
+           sudo apt-get install -qy kubelet=1.11.1-00 kubectl=1.11.1-00 kubeadm=1.11.1-00 kubernetes-cni=0.6.0-00
+       
+     NOTE: to get actual list of supported version run following:
+         $ curl -s https://packages.cloud.google.com/apt/dists/kubernetes-xenial/main/binary-amd64/Packages | grep Version | awk '{print $2}'
 
 6. Setup cluster node (follow steps 1 - 5)
 
@@ -119,14 +122,14 @@
             * kubeadm token create --print-join-command
         * From Node:
             * Run generated command from previous step
-                * kubeadm join 172.20.0.74:6443 --token 5tczzv.d2n16tbfni3bj2zc --discovery-token-ca-cert-hash sha256:62cbc574ccffcde08e8b227546ce87cb41fdbf9b627d1914c32fc9b729e2cc37
+                * kubeadm join 172.20.0.74:6443 --token 5tcszs.d2n16tbfni3bj2zc --discovery-token-ca-cert-hash sha256:62cba554ccffcde08e8b227546ce87cb41fdbf9b627d1914c32fc9b729e2cc37
         * Verify the nodes on master
             * kubectl get nodes
             * Expected result:
         	```
         	    NAME         STATUS    ROLES     AGE       VERSION
-        	    k8s-master   Ready     master    12h       v1.9.2
-        	    k8s-node1    Ready     <none>    12h       v1.9.2
+        	    k8s-master   Ready     master    12h       v1.11.1
+        	    k8s-node1    Ready     <none>    12h       v1.11.1
             ```
 
 9. Dashboard
@@ -545,3 +548,11 @@
 
 17. SonarQube:
     * https://coderise.io/installing-sonarqube-in-kubernetes/
+
+18. Garbage collection:
+    * Disk usage in current folder:
+        du -sh -- *
+    * Delete old persistent volumes:
+        rm -r /k8s-storage/volume1/archived*
+    * Clean up docker:
+        docker system prune
